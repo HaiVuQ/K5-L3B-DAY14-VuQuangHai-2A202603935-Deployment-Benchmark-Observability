@@ -72,15 +72,14 @@ HTTP/1.1 200 OK
 - **Stage 2 (`runtime`, `FROM python:3.11-slim AS runtime`):** tạo non-root user (`appuser`), chỉ `COPY --from=builder /root/.local /home/appuser/.local` cùng mã nguồn, thêm `HEALTHCHECK` và chạy `uvicorn`.
 - **Tại sao image nhỏ hơn?** Vì bỏ lại toàn bộ công cụ biên dịch (`gcc`, header files, apt cache, build artifacts) ở stage `builder`, đồng thời dùng base image `python:3.11-slim` thay vì `python:3.11` đầy đủ.
 
-> **Ghi chú đo thực tế:** Máy hiện tại chưa cài Docker Desktop, nên chưa thể chạy `docker build` / `docker images`. Cần chạy các lệnh sau trên máy có Docker/WSL2 rồi điền số MB thực đo (không ước lượng):
-> ```bash
-> docker build -f 02-docker/develop/Dockerfile -t my-agent:develop .
-> docker build -f 02-docker/production/Dockerfile -t my-agent:advanced .
-> docker images | grep my-agent
-> ```
-> - Develop: `[Chờ đo bằng docker images trên máy có Docker]` MB
-> - Production: `[Chờ đo bằng docker images trên máy có Docker]` MB
-> - Difference: `[Chờ tính % sau khi đo]`%
+**Kết quả đo thực tế bằng `docker images | grep my-agent` (trên GitHub Codespaces, Docker 29.9.2):**
+```text
+my-agent:advanced    c95ae97bb825        240MB             57.7MB
+my-agent:develop     d658f47e8250       1.67GB              427MB
+```
+- **Develop:** `1.67 GB` (~1670 MB)
+- **Production (multi-stage):** `240 MB`
+- **Chênh lệch:** giảm **`85.6%`** dung lượng image (nhỏ hơn ~7 lần).
 
 ### Exercise 2.4: Kiến trúc Docker Compose stack (`02-docker/production/docker-compose.yml`)
 
@@ -107,7 +106,10 @@ Client (HTTP :80) ───► │     nginx (alpine)       │  Reverse proxy, 
 
 - **Các service khởi động:** `nginx`, `agent`, `redis`, `qdrant` (4 service).
 - **Cách giao tiếp:** Tất cả gắn vào chung bridge network `internal`. Các container gọi nhau bằng **tên service** qua Docker DNS nội bộ: Nginx proxy sang `http://agent:8000`, Agent nối tới `redis://redis:6379/0` và `http://qdrant:6333`. Chỉ `nginx` mở cổng ra host (`80`, `443`); `agent`, `redis`, `qdrant` được cô lập bên trong.
-- **Kết quả test qua Nginx:** `[Chờ chạy docker compose -p k5-day14-docker up -d && curl http://localhost/health trên máy có Docker]` (nhớ chạy `touch 02-docker/production/.env.local` trước).
+- **Kết quả test qua Nginx (`curl -sS http://localhost/health`):**
+  ```json
+  {"status":"ok","uptime_seconds":9.3,"version":"2.0.0","timestamp":"2026-11-26T09:51:03.557511"}
+  ```
 
 ---
 
@@ -234,7 +236,21 @@ HTTP/1.1 200 OK
 - **Vì sao state trong RAM bị hỏng khi chạy nhiều instance?** Khi Nginx phân phối request theo round-robin tới 3 instance (`agent-1`, `agent-2`, `agent-3`), request turn 1 có thể vào `agent-1` nhưng turn 2 vào `agent-2`. Nếu lịch sử hội thoại lưu trong dict RAM của `agent-1`, `agent-2` sẽ không thấy session đó.
 - **Giải pháp stateless:** lưu toàn bộ session/history (và rate limit/cost ở Part 6) trong **Redis** với TTL (`setex("session:<id>", 3600, ...)`). Nhờ đó bất kỳ instance nào cũng đọc/ghi chung một nguồn sự thật.
 - **Cơ chế `test_stateless.py`:** gửi 5 câu hỏi liên tiếp trong cùng một `session_id` qua Nginx (`http://localhost:8080/chat`), quan sát trường `served_by` thay đổi giữa các instance khác nhau, sau đó gọi `GET /chat/{session_id}/history` để xác nhận đủ 10 message (5 user + 5 assistant) vẫn nguyên vẹn nhờ Redis.
-- **Kết quả chạy Docker Compose `--scale agent=3`:** `[Chờ chạy trên máy có Docker: touch 05-scaling-reliability/production/.env.local && docker compose -p k5-day14-scaling up -d --build --scale agent=3 && python test_stateless.py]`.
+- **Kết quả chạy thực tế (`docker compose -p k5-day14-scaling up -d --build --scale agent=3` → `python test_stateless.py`):**
+  ```text
+  Session ID: 5c33a364-bada-424a-883e-8796e0217ff2
+  Request 1: [instance-859a91]
+  Request 2: [instance-50fe8d]
+  Request 3: [instance-0d500d]
+  Request 4: [instance-859a91]
+  Request 5: [instance-50fe8d]
+  Total requests: 5
+  Instances used: {'instance-859a91', 'instance-50fe8d', 'instance-0d500d'}
+  ✅ All requests served despite different instances!
+  Total messages: 10
+  ✅ Session history preserved across all instances via Redis!
+  ```
+  *(Nginx chia đều 5 request cho cả 3 instance khác nhau theo round-robin, và endpoint `/chat/{session_id}/history` vẫn đọc đủ 10 message vì toàn bộ session nằm trong Redis).*
 
 ---
 
@@ -247,31 +263,30 @@ HTTP/1.1 200 OK
 
 ### Output `check_production_ready.py`
 
-Chạy trên Windows với `--skip-docker` và Redis cục bộ (38/38 checks tĩnh & runtime đều ✅; 2 tiêu chí còn lại cần chạy lại không có `--skip-docker` trong WSL2 + Docker Desktop để đạt `PASS 12/12`):
+Chạy đầy đủ (có Docker + Redis + `--public-url https://day14-production-agent-94oi.onrender.com`) trên GitHub Codespaces (Linux `posix`, Docker 29.9.2):
 
 ```text
-================================================================
-  📋 Checklist Deliverable
-     ⚠️  Dockerfile (multi-stage, < 500 MB)
-     ✅ docker-compose.yml (agent + redis)
-     ✅ .dockerignore
-     ✅ Health check endpoint (GET /health)
-     ✅ Readiness endpoint (GET /ready)
-     ✅ API Key authentication
-     ✅ Rate limiting
-     ✅ Cost guard
-     ✅ Config từ environment variables
-     ✅ Structured logging
-     ⚠️  Graceful shutdown
-     ✅ Public URL ready (Railway / Render config)
-----------------------------------------------------------------
-  Result: 10/12 tiêu chí đạt · 38/38 checks passed
-  ⚠️  Chưa kiểm tra được: Dockerfile (multi-stage, < 500 MB), Graceful shutdown
-  ℹ️  Đang chạy chế độ nhanh — kết quả chấm phải chạy đầy đủ (không --static-only / --skip-docker)
-================================================================
+============================================================
+📋 Checklist Deliverable
+   ✅ Dockerfile (multi-stage, < 500 MB)
+   ✅ docker-compose.yml (agent + redis)
+   ✅ .dockerignore
+   ✅ Health check endpoint (GET /health)
+   ✅ Readiness endpoint (GET /ready)
+   ✅ API Key authentication
+   ✅ Rate limiting
+   ✅ Cost guard
+   ✅ Config từ environment variables
+   ✅ Structured logging
+   ✅ Graceful shutdown
+   ✅ Public URL ready (Railway / Render config)
+------------------------------------------------------------
+Result: 12/12 tiêu chí đạt · 44/44 checks passed
+🎉 PASS 12/12 — PRODUCTION READY! Deploy nào!
+============================================================
 ```
 
-> **Lưu ý trước khi nộp:** Chạy lại `python check_production_ready.py` (đầy đủ, trong WSL2 có Docker Desktop) và thay thế khối output trên bằng kết quả `PASS 12/12`.
+*(Chi tiết nổi bật: Docker image `273 MB < 500 MB`, SIGTERM exit code `0`, `docker stop` tắt êm exit code `0` trong `0.6s`, Public URL `https://day14-production-agent-94oi.onrender.com/health` trả `200`).*
 
 ---
 
