@@ -115,8 +115,10 @@ Client (HTTP :80) ───► │     nginx (alpine)       │  Reverse proxy, 
 
 ### Exercise 3.1 / 3.2: Deploy agent Part 6 & So sánh `railway.toml` vs `render.yaml`
 
-- **URL Public (agent Part 6):** `[Điền URL sau khi deploy thư mục 06-lab-complete/ lên Railway hoặc Render — xem DEPLOYMENT.md]`
-- **Screenshots:** `screenshots/dashboard.png`, `screenshots/running.png`, `screenshots/test.png`
+- **URL Public (agent Part 6 trên Render):** https://day14-production-agent-94oi.onrender.com
+- **Platform:** Render Blueprint (`06-lab-complete/render.yaml` — Web Service Docker `day14-production-agent` + Key Value Redis `day14-agent-redis`, Free plan, Singapore)
+- **Kết quả 4 lệnh tự kiểm CP6:** `/health` → `200`, `/ready` → `200` (`"redis":"ok"`), `/ask` không có key → `401`, `/ask` có `X-API-Key` → `200`
+- **Screenshots:** [dashboard.png](screenshots/dashboard.png), [running.png](screenshots/running.png), [test.png](screenshots/test.png)
 
 #### So sánh `railway.toml` và `render.yaml`
 
